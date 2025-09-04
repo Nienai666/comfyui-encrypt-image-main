@@ -184,22 +184,46 @@ class DecryptImage:
     CATEGORY = "utils"
     
     def decrypt_image(self, image, password):
-        # 将 ComfyUI 的图像格式转换为 PIL 图像格式
-        i = 255. * image.cpu().numpy()
+        # 获取图像数据并处理可能的维度问题
+        img_data = image.cpu().numpy()
+        
+        # 处理不同形状的输入
+        if len(img_data.shape) == 4 and img_data.shape[0] == 1:
+            # 处理形状为 (1, 1, height, width) 的情况
+            if img_data.shape[1] == 1:
+                img_data = img_data[0, 0]
+            else:
+                img_data = img_data[0]
+        elif len(img_data.shape) == 3 and img_data.shape[0] == 1:
+            # 处理形状为 (1, height, width) 的情况
+            img_data = img_data[0]
+        
+        # 处理数据类型问题 - 确保是浮点数并在 0-1 范围内
+        if np.issubdtype(img_data.dtype, np.integer):
+            img_data = img_data.astype(np.float32) / 255.0
+        
+        # 转换为 PIL 图像格式
+        i = 255. * img_data
         img = Image.fromarray(np.clip(i, 0, 255).astype(np.uint8))
         
         # 检查图像是否已经加密
-        if img.format and img.format.lower() == 'png':
-            pnginfo = img.info or {}
-            if 'Encrypt' in pnginfo:
-                # 根据加密类型选择相应的解密函数
-                if pnginfo['Encrypt'] == 'pixel_shuffle':
-                    dencrypt_image(img, get_sha256(password))
-                elif pnginfo['Encrypt'] == 'pixel_shuffle_2':
-                    dencrypt_image_v2(img, get_sha256(password))
+        # 注意：从 ComfyUI 节点传入的图像可能没有原始的 PNG 元数据
+        # 因此我们需要尝试解密
+        try:
+            # 尝试使用 v2 解密（当前版本）
+            dencrypt_image_v2(img, get_sha256(password))
+        except Exception as e:
+            # 如果失败，尝试使用 v1 解密
+            try:
+                dencrypt_image(img, get_sha256(password))
+            except Exception:
+                # 如果都失败，返回原始图像
+                pass
         
         # 将解密后的 PIL 图像转换回 ComfyUI 的图像格式 (RGB 通道)
         img_array = np.array(img).astype(np.float32) / 255.0
+        
+        # 确保图像是 RGB 格式
         if len(img_array.shape) == 2:
             # 灰度图像转换为 RGB
             img_array = np.stack([img_array, img_array, img_array], axis=-1)
@@ -207,8 +231,11 @@ class DecryptImage:
             # RGBA 转换为 RGB
             img_array = img_array[:, :, :3]
         
-        # 确保输出格式符合 ComfyUI 的要求
-        return (np.expand_dims(img_array, axis=0),)
+        # 确保输出格式符合 ComfyUI 的要求 (1, height, width, 3)
+        if len(img_array.shape) == 3:
+            img_array = np.expand_dims(img_array, axis=0)
+        
+        return (img_array, )
 
 NODE_CLASS_MAPPINGS = {
     "EncryptImage": EncryptImage,
