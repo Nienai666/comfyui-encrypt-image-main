@@ -165,6 +165,8 @@ class EncryptImage:
 
         return { "ui": { "images": results} }
     
+import torch
+
 class DecryptImage:
     def __init__(self):
         pass
@@ -235,7 +237,8 @@ class DecryptImage:
         if len(img_array.shape) == 3:
             img_array = np.expand_dims(img_array, axis=0)
         
-        return (img_array, )
+        # 转换为 PyTorch 张量以确保兼容性
+        return (torch.from_numpy(img_array), )
 
 NODE_CLASS_MAPPINGS = {
     "EncryptImage": EncryptImage,
