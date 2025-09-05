@@ -1,23 +1,21 @@
 
-import base64
-import io
-import json
 import os
+import torch
+import json
+from PIL import Image as PILImage
+from PIL import PngImagePlugin, _util, ImagePalette
 from pathlib import Path
 from urllib.parse import unquote
-from .core.core import get_sha256,dencrypt_image,dencrypt_image_v2,encrypt_image_v2
-from PIL import PngImagePlugin,_util,ImagePalette
-from PIL import Image as PILImage
-from io import BytesIO
-from typing import Optional
+import numpy as np
 import sys
+from typing import Optional
+
+# 导入ComfyUI相关模块
 import folder_paths
 from comfy.cli_args import args
 
-from PIL import Image
-from PIL.PngImagePlugin import PngInfo
-
-import numpy as np
+# 导入核心加密解密功能
+from .core.core import get_sha256, dencrypt_image, dencrypt_image_v2, encrypt_image_v2
 
 _password = '123qwe'
 
@@ -143,10 +141,10 @@ class EncryptImage:
         results = list()
         for image in images:
             i = 255. * image.cpu().numpy()
-            img = Image.fromarray(np.clip(i, 0, 255).astype(np.uint8))
+            img = PILImage.fromarray(np.clip(i, 0, 255).astype(np.uint8))
             metadata = None
             if not args.disable_metadata:
-                metadata = PngInfo()
+                metadata = PngImagePlugin.PngInfo()
                 if prompt is not None:
                     metadata.add_text("prompt", json.dumps(prompt))
                 if extra_pnginfo is not None:
@@ -165,115 +163,87 @@ class EncryptImage:
 
         return { "ui": { "images": results} }
     
-import torch
-import folder_paths
-import os
-from PIL import Image as PILImage
-from io import BytesIO
-import numpy as np
-
-class 解密图片:
-    def __init__(self):
-        self.output_dir = folder_paths.get_temp_directory()
-        self.type = "temp"
-    
+# 解密图片节点类，用于从本地导入加密图片并解密
+class DecryptImageFromFile:
     @classmethod
     def INPUT_TYPES(s):
+        # 使用COMBO类型来提供文件选择功能，类似于原生的文件上传节点
+        # 获取输入文件夹路径
+        input_dir = folder_paths.get_input_directory()
+        # 获取所有图片文件
+        files = []
+        if os.path.exists(input_dir):
+            for f in os.listdir(input_dir):
+                if os.path.isfile(os.path.join(input_dir, f)):
+                    ext = os.path.splitext(f)[1].lower()
+                    if ext in ('.png', '.jpg', '.jpeg', '.webp'):
+                        files.append(f)
+        
         return {
             "required": {
-                "password": ("STRING", {"default": "123qwe", "name": "密码"}),
-            },
-            "optional": {
-                "image": ("IMAGE", {"name": "图像输入"}),
-            },
-            "hidden": {
-                "prompt": "PROMPT",
-                "extra_pnginfo": "EXTRA_PNGINFO",
-                "unique_id": "UNIQUE_ID",
-            },
-            "image_upload": "IMAGE_UPLOAD"
+                "image": (files, {"image_upload": True, "default": files[0] if files else ""}),
+                "password": ("STRING", {"default": "123qwe", "placeholder": "输入解密密码"}),
+            }
         }
     
     RETURN_TYPES = ("IMAGE",)
-    FUNCTION = '解密图像'
+    FUNCTION = "decrypt_image"
+    CATEGORY = "utils"
     
-    CATEGORY = "工具"
-    
-    def 解密图像(self, password, image=None, image_upload=None, prompt=None, extra_pnginfo=None, unique_id=None):
-        # 获取图像数据
-        if image is not None:
-            # 从节点输入获取图像
-            img_data = image.cpu().numpy()
-            
-            # 处理不同形状的输入
-            if len(img_data.shape) == 4 and img_data.shape[0] == 1:
-                # 处理形状为 (1, 1, height, width) 的情况
-                if img_data.shape[1] == 1:
-                    img_data = img_data[0, 0]
-                else:
-                    img_data = img_data[0]
-            elif len(img_data.shape) == 3 and img_data.shape[0] == 1:
-                # 处理形状为 (1, height, width) 的情况
-                img_data = img_data[0]
-            
-            # 处理数据类型问题 - 确保是浮点数并在 0-1 范围内
-            if np.issubdtype(img_data.dtype, np.integer):
-                img_data = img_data.astype(np.float32) / 255.0
-            
-            # 转换为 PIL 图像格式
-            i = 255. * img_data
-            img = PILImage.fromarray(np.clip(i, 0, 255).astype(np.uint8))
-        elif image_upload is not None:
-            # 从上传获取图像
-            if isinstance(image_upload, str):
-                # 处理base64编码的图像
-                import base64
-                if image_upload.startswith('data:image/'):
-                    image_upload = image_upload.split(',')[1]
-                img_data = base64.b64decode(image_upload)
-                img = PILImage.open(BytesIO(img_data))
-            else:
-                # 处理直接上传的图像
-                img = image_upload
-        else:
-            # 如果没有图像输入，返回空图像
-            from PIL import ImageDraw
-            img = PILImage.new('RGB', (512, 512), color='black')
-            draw = ImageDraw.Draw(img)
-            draw.text((10, 10), "请上传或连接加密图像", fill='white')
+    def decrypt_image(self, image, password):
+        # 检查文件是否有效
+        if not image:
+            raise FileNotFoundError(f"请选择一个有效的图片文件")
         
-        # 尝试解密图像
         try:
-            # 尝试使用 v2 解密（当前版本）
-            dencrypt_image_v2(img, get_sha256(password))
+            # 获取完整的文件路径
+            input_dir = folder_paths.get_input_directory()
+            image_path = os.path.join(input_dir, image)
+            
+            # 使用局部密码解密，不修改全局密码
+            # 直接加载图片
+            with PILImage.open(image_path) as img:
+                img_copy = img.copy()
+                
+                # 检查并解密图片
+                if 'Encrypt' in img_copy.info:
+                    if img_copy.info['Encrypt'] == 'pixel_shuffle':
+                        dencrypt_image(img_copy, get_sha256(password))
+                    elif img_copy.info['Encrypt'] == 'pixel_shuffle_2':
+                        dencrypt_image_v2(img_copy, get_sha256(password))
+                
+                # 转换为数组并处理格式
+                img_array = np.array(img_copy)
+                
+                # 确保是RGB格式
+                if len(img_array.shape) == 2:
+                    # 灰度图转RGB
+                    img_array = np.stack((img_array,)*3, axis=-1)
+                elif img_array.shape[2] == 4:
+                    # RGBA转RGB
+                    img_array = img_array[:, :, :3]
+                
+                # 确保形状符合ComfyUI要求 (1, height, width, 3)
+                if len(img_array.shape) == 3:
+                    img_array = np.expand_dims(img_array, axis=0)
+                
+                # 转换为float32并归一化到[0,1]
+                img_array = img_array.astype(np.float32) / 255.0
+                
+                # 转换为PyTorch张量
+                return (torch.from_numpy(img_array),)
         except Exception as e:
-            # 如果失败，尝试使用 v1 解密
-            try:
-                dencrypt_image(img, get_sha256(password))
-            except Exception:
-                # 如果都失败，返回原始图像
-                pass
-        
-        # 将解密后的 PIL 图像转换回 ComfyUI 的图像格式 (RGB 通道)
-        img_array = np.array(img).astype(np.float32) / 255.0
-        
-        # 确保图像是 RGB 格式
-        if len(img_array.shape) == 2:
-            # 灰度图像转换为 RGB
-            img_array = np.stack([img_array, img_array, img_array], axis=-1)
-        elif img_array.shape[2] == 4:
-            # RGBA 转换为 RGB
-            img_array = img_array[:, :, :3]
-        
-        # 确保输出格式符合 ComfyUI 的要求 (1, height, width, 3)
-        if len(img_array.shape) == 3:
-            img_array = np.expand_dims(img_array, axis=0)
-        
-        # 转换为 PyTorch 张量以确保兼容性
-        return (torch.from_numpy(img_array), )
+            print(f"解密图片时出错: {str(e)}")
+            # 返回一个空白图像作为错误处理
+            blank_image = np.zeros((1, 64, 64, 3), dtype=np.float32)
+            return (torch.from_numpy(blank_image),)
+
+# 添加中文节点名称
+class 解密图片(DecryptImageFromFile):
+    CATEGORY = "工具"
 
 NODE_CLASS_MAPPINGS = {
     "EncryptImage": EncryptImage,
-    "DecryptImage": DecryptImage,
+    "DecryptImageFromFile": DecryptImageFromFile,
     "解密图片": 解密图片
 }
