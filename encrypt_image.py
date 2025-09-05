@@ -166,51 +166,83 @@ class EncryptImage:
         return { "ui": { "images": results} }
     
 import torch
+import folder_paths
+import os
+from PIL import Image as PILImage
+from io import BytesIO
+import numpy as np
 
-class DecryptImage:
+class 解密图片:
     def __init__(self):
-        pass
+        self.output_dir = folder_paths.get_temp_directory()
+        self.type = "temp"
     
     @classmethod
     def INPUT_TYPES(s):
         return {
             "required": {
-                "image": ("IMAGE",),
-                "password": ("STRING", {"default": "123qwe"}),
+                "password": ("STRING", {"default": "123qwe", "name": "密码"}),
             },
+            "optional": {
+                "image": ("IMAGE", {"name": "图像输入"}),
+            },
+            "hidden": {
+                "prompt": "PROMPT",
+                "extra_pnginfo": "EXTRA_PNGINFO",
+                "unique_id": "UNIQUE_ID",
+            },
+            "image_upload": "IMAGE_UPLOAD"
         }
     
     RETURN_TYPES = ("IMAGE",)
-    FUNCTION = 'decrypt_image'
+    FUNCTION = '解密图像'
     
-    CATEGORY = "utils"
+    CATEGORY = "工具"
     
-    def decrypt_image(self, image, password):
-        # 获取图像数据并处理可能的维度问题
-        img_data = image.cpu().numpy()
-        
-        # 处理不同形状的输入
-        if len(img_data.shape) == 4 and img_data.shape[0] == 1:
-            # 处理形状为 (1, 1, height, width) 的情况
-            if img_data.shape[1] == 1:
-                img_data = img_data[0, 0]
-            else:
+    def 解密图像(self, password, image=None, image_upload=None, prompt=None, extra_pnginfo=None, unique_id=None):
+        # 获取图像数据
+        if image is not None:
+            # 从节点输入获取图像
+            img_data = image.cpu().numpy()
+            
+            # 处理不同形状的输入
+            if len(img_data.shape) == 4 and img_data.shape[0] == 1:
+                # 处理形状为 (1, 1, height, width) 的情况
+                if img_data.shape[1] == 1:
+                    img_data = img_data[0, 0]
+                else:
+                    img_data = img_data[0]
+            elif len(img_data.shape) == 3 and img_data.shape[0] == 1:
+                # 处理形状为 (1, height, width) 的情况
                 img_data = img_data[0]
-        elif len(img_data.shape) == 3 and img_data.shape[0] == 1:
-            # 处理形状为 (1, height, width) 的情况
-            img_data = img_data[0]
+            
+            # 处理数据类型问题 - 确保是浮点数并在 0-1 范围内
+            if np.issubdtype(img_data.dtype, np.integer):
+                img_data = img_data.astype(np.float32) / 255.0
+            
+            # 转换为 PIL 图像格式
+            i = 255. * img_data
+            img = PILImage.fromarray(np.clip(i, 0, 255).astype(np.uint8))
+        elif image_upload is not None:
+            # 从上传获取图像
+            if isinstance(image_upload, str):
+                # 处理base64编码的图像
+                import base64
+                if image_upload.startswith('data:image/'):
+                    image_upload = image_upload.split(',')[1]
+                img_data = base64.b64decode(image_upload)
+                img = PILImage.open(BytesIO(img_data))
+            else:
+                # 处理直接上传的图像
+                img = image_upload
+        else:
+            # 如果没有图像输入，返回空图像
+            from PIL import ImageDraw
+            img = PILImage.new('RGB', (512, 512), color='black')
+            draw = ImageDraw.Draw(img)
+            draw.text((10, 10), "请上传或连接加密图像", fill='white')
         
-        # 处理数据类型问题 - 确保是浮点数并在 0-1 范围内
-        if np.issubdtype(img_data.dtype, np.integer):
-            img_data = img_data.astype(np.float32) / 255.0
-        
-        # 转换为 PIL 图像格式
-        i = 255. * img_data
-        img = Image.fromarray(np.clip(i, 0, 255).astype(np.uint8))
-        
-        # 检查图像是否已经加密
-        # 注意：从 ComfyUI 节点传入的图像可能没有原始的 PNG 元数据
-        # 因此我们需要尝试解密
+        # 尝试解密图像
         try:
             # 尝试使用 v2 解密（当前版本）
             dencrypt_image_v2(img, get_sha256(password))
@@ -242,5 +274,6 @@ class DecryptImage:
 
 NODE_CLASS_MAPPINGS = {
     "EncryptImage": EncryptImage,
-    "DecryptImage": DecryptImage
+    "DecryptImage": DecryptImage,
+    "解密图片": 解密图片
 }
